@@ -37,9 +37,9 @@ const login = async (state, credentials)=>{
         if (data.success){
             setAuthUser(data.userData);
             connectSocket(data.userData);
-            axios.defaults.headers.common["token"] = data.token;
+            axios.defaults.headers.common["token"] = data.token; //ab har future call mai token auto set hojayega
             setToken(data.token);
-            localStorage.setItem("token", data.token)
+            localStorage.setItem("token", data.token)//token ko browser mai store krdiya taki reload krne pr login 
             toast.success(data.message)
         }else{
             toast.error(data.message)
@@ -55,7 +55,7 @@ const login = async (state, credentials)=>{
         localStorage.removeItem("token");
         setToken(null);
         setAuthUser(null);
-        setOnlineUsers([]);
+        setOnlineUsers([]);//doubt
         axios.defaults.headers.common["token"] = null;
         toast.success("Logged out successfully")
         socket.disconnect();
@@ -112,5 +112,7 @@ const login = async (state, credentials)=>{
         <AuthContext.Provider value={value}>
             {children}
         </AuthContext.Provider>
-    )
+          )
 }
+
+//“Main axios.defaults.headers.common ko pehle set karta hoon kyunki mujhe ensure karna hota hai ki aage koi bhi API call kare — chahe React component se ya socket se — wo token ke sath jaaye. Fir mai localStorage aur React state me token store karta hoon for persistence and rendering logic.

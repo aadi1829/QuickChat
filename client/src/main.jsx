@@ -1,7 +1,7 @@
 import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.jsx'
-import {BrowserRouter} from 'react-router-dom'
+import {BrowserRouter} from 'react-router-dom'//to handle the page navigation without reloading the browser
 import { AuthProvider } from '../context/AuthContext.jsx'
 import {ChatProvider} from '../context/ChatContext.jsx'
 

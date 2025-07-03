@@ -67,6 +67,7 @@ export const sendMessage = async (req, res) =>{
         const {text, image} = req.body;
         const receiverId = req.params.id;
         const senderId = req.user._id;
+        const senderName = req.user.fullName;
 
         let imageUrl;
         if(image){
@@ -83,7 +84,10 @@ export const sendMessage = async (req, res) =>{
         // Emit the new message to the receiver's socket
         const receiverSocketId = userSocketMap[receiverId];
         if (receiverSocketId){
-            io.to(receiverSocketId).emit("newMessage", newMessage)
+            io.to(receiverSocketId).emit("newMessage", {
+                ...newMessage.toObject(),
+                senderName
+            })
         }
 
         res.json({success: true, newMessage});

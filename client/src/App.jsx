@@ -21,3 +21,6 @@ const App = () => {
 }
 
 export default App
+
+//konsa page kis user ko kb dikhana hai , this is the Routing component of our React App
+//useContext - to fetch the data from the context API
