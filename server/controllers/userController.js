@@ -5,12 +5,26 @@ import cloudinary from "../lib/cloudinary.js"
 
 // Signup a new user
 export const signup = async (req, res)=>{
-    const { fullName, email, password, bio } = req.body;
+    const { fullName, email, password, bio, role } = req.body;
 
     try {
-        if (!fullName || !email || !password || !bio){
-            return res.json({success: false, message: "Missing Details" })
+        if (!fullName || !email || !password || !bio || !role){
+            return res.status(400).json({success: false, message: "Missing Details" })
         }
+
+        if (!["astrologer", "client"].includes(role)) {
+            return res.status(400).json({success: false, message: "Invalid role. Must be 'astrologer' or 'client'." });
+        }
+
+        // --- NEW: Limit astrologer registrations to 2 ---
+        if (role === "astrologer") {
+            const astrologerCount = await User.countDocuments({ role: "astrologer" });
+            if (astrologerCount >= 2) {
+                return res.status(403).json({ success: false, message: "Registration limit reached: only 2 astrologers are allowed." });
+            }
+        }
+        // ----------------------------------------------
+
         const user = await User.findOne({email});
 
         if(user){
@@ -21,7 +35,7 @@ export const signup = async (req, res)=>{
         const hashedPassword = await bcrypt.hash(password, salt);
 
         const newUser = await User.create({
-            fullName, email, password: hashedPassword, bio
+            fullName, email, password: hashedPassword, bio, role
         });
 
         const token = generateToken(newUser._id)
@@ -39,15 +53,22 @@ export const login = async (req, res) =>{
         const { email, password } = req.body;
         const userData = await User.findOne({email})
 
+        if (!userData) {
+            return res.status(404).json({ success: false, message: "User not found" });
+        }
+
         const isPasswordCorrect = await bcrypt.compare(password, userData.password);
 
         if (!isPasswordCorrect){
-            return res.json({ success: false, message: "Invalid credentials" });
+            return res.status(400).json({ success: false, message: "Invalid credentials" });
         }
 
         const token = generateToken(userData._id)
 
-        res.json({success: true, userData, token, message: "Login successful"})
+        // Exclude password from response
+        const { password: _, ...userWithoutPassword } = userData.toObject();
+
+        res.json({success: true, userData: userWithoutPassword, token, message: "Login successful"})
     } catch (error) {
         console.log(error.message);
         res.json({success: false, message: error.message})

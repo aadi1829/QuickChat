@@ -19,3 +19,16 @@ export const protectRoute = async (req, res, next)=>{
         res.json({ success: false, message: error.message });
     }
 }
+
+// Middleware for role-based authorization
+export const authorizeRole = (roles) => {
+    return (req, res, next) => {
+        if (!roles.includes(req.user.role)) {
+            return res.status(403).json({
+                success: false,
+                message: `Access denied. Role '${req.user.role}' is not authorized for this route.`
+            });
+        }
+        next();
+    };
+};

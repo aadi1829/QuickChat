@@ -9,6 +9,7 @@ const LoginPage = () => {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [bio, setBio] = useState("")
+  const [role, setRole] = useState("client")
   const [isDataSubmitted, setIsDataSubmitted] = useState(false);
 
   const {login} = useContext(AuthContext)
@@ -21,7 +22,11 @@ const LoginPage = () => {
       return;
     }
 
-    login(currState=== "Sign up" ? 'signup' : 'login', {fullName, email, password, bio})
+    const credentials = currState === "Sign up" 
+      ? {fullName, email, password, bio, role} 
+      : {email, password};
+
+    login(currState=== "Sign up" ? 'signup' : 'login', credentials)
   }
 
   return (
@@ -32,31 +37,47 @@ const LoginPage = () => {
 
       {/* -------- right -------- */}
 
-      <form onSubmit={onSubmitHandler} className='border-2 bg-white/8 text-white border-gray-500 p-6 flex flex-col gap-6 rounded-lg shadow-lg'>
+      <form onSubmit={onSubmitHandler} className='border-2 bg-white/10 text-white border-gray-500 p-6 flex flex-col gap-6 rounded-lg shadow-lg w-full max-w-[400px]'>
         <h2 className='font-medium text-2xl flex justify-between items-center'>
           {currState}
-          {isDataSubmitted && <img onClick={()=> setIsDataSubmitted(false)} src={assets.arrow_icon} alt="" className='w-5 cursor-pointer'/>
+          {isDataSubmitted && <img onClick={()=> setIsDataSubmitted(false)} src={assets.arrow_icon} alt="" className='w-5 cursor-pointer rotate-180'/>
           }
           
          </h2>
 
         {currState === "Sign up" && !isDataSubmitted && (
-          <input onChange={(e)=>setFullName(e.target.value)} value={fullName}
-           type="text" className='p-2 border border-gray-500 rounded-md focus:outline-none' placeholder="Full Name" required/>
+          <>
+            <input onChange={(e)=>setFullName(e.target.value)} value={fullName}
+            type="text" className='p-2 bg-transparent border border-gray-500 rounded-md focus:outline-none focus:ring-1 focus:ring-violet-500' placeholder="Full Name" required/>
+            
+            <div className='flex flex-col gap-2'>
+              <p className='text-sm text-gray-400'>I am a:</p>
+              <div className='flex gap-4'>
+                <label className='flex items-center gap-2 cursor-pointer'>
+                  <input type="radio" name="role" value="client" checked={role === "client"} onChange={(e)=> setRole(e.target.value)} className='accent-violet-500'/>
+                  <span>Client</span>
+                </label>
+                <label className='flex items-center gap-2 cursor-pointer'>
+                  <input type="radio" name="role" value="astrologer" checked={role === "astrologer"} onChange={(e)=> setRole(e.target.value)} className='accent-violet-500'/>
+                  <span>Astrologer</span>
+                </label>
+              </div>
+            </div>
+          </>
         )}
 
         {!isDataSubmitted && (
           <>
           <input onChange={(e)=>setEmail(e.target.value)} value={email}
-           type="email" placeholder='Email Address' required className='p-2 border border-gray-500 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500'/>
+           type="email" placeholder='Email Address' required className='p-2 bg-transparent border border-gray-500 rounded-md focus:outline-none focus:ring-1 focus:ring-violet-500'/>
           <input onChange={(e)=>setPassword(e.target.value)} value={password}
-           type="password" placeholder='Password' required className='p-2 border border-gray-500 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500'/>
+           type="password" placeholder='Password' required className='p-2 bg-transparent border border-gray-500 rounded-md focus:outline-none focus:ring-1 focus:ring-violet-500'/>
           </>
         )}
 
         {currState === "Sign up" && isDataSubmitted && (
             <textarea onChange={(e)=>setBio(e.target.value)} value={bio}
-             rows={4} className='p-2 border border-gray-500 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500' placeholder='provide a short bio...' required></textarea>
+             rows={4} className='p-2 bg-transparent border border-gray-500 rounded-md focus:outline-none focus:ring-1 focus:ring-violet-500' placeholder='provide a short bio...' required></textarea>
           )
         }
 

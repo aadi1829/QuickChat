@@ -8,13 +8,14 @@ import toast from 'react-hot-toast'
 const ChatContainer = () => {
 
     const { messages, selectedUser, setSelectedUser, sendMessage, 
-        getMessages} = useContext(ChatContext)
+        getMessages, sessionStartTime} = useContext(ChatContext)
 
     const { authUser, onlineUsers } = useContext(AuthContext)
 
     const scrollEnd = useRef()
 
     const [input, setInput] = useState('');
+    const [timeLeft, setLeftTime] = useState(null)
 
     // Handle sending a message
     const handleSendMessage = async (e)=>{
@@ -23,6 +24,43 @@ const ChatContainer = () => {
         await sendMessage({text: input.trim()});
         setInput("")
     }
+
+    // Timer logic
+    useEffect(()=>{
+        let interval;
+        if(sessionStartTime){
+            const startTime = new Date(sessionStartTime).getTime();
+            const endTime = startTime + 3 * 60 * 1000;
+
+            interval = setInterval(()=>{
+                const now = new Date().getTime();
+                const diff = endTime - now;
+
+                if(diff <= 0){
+                    setLeftTime(0);
+                    clearInterval(interval)
+                }else{
+                    setLeftTime(diff)
+                }
+            }, 1000)
+        }else{
+            setLeftTime(null)
+        }
+
+        return ()=> clearInterval(interval)
+    },[sessionStartTime])
+
+    const formatTime = (ms) => {
+        if (ms === null || ms < 0) return "00:00";
+        const totalSeconds = Math.floor(ms / 1000);
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = totalSeconds % 60;
+        return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    };
+
+    const isExpired = timeLeft === 0;
+    const isNotStarted = !sessionStartTime;
+    const isDisabled = isExpired || (authUser.role === "client" && isNotStarted);
 
     // Handle sending an image
     const handleSendImage = async (e) =>{
@@ -57,15 +95,22 @@ const ChatContainer = () => {
       {/* ------- header ------- */}
       <div className='flex items-center gap-3 py-3 mx-4 border-b border-stone-500'>
         <img src={selectedUser.profilePic || assets.avatar_icon} alt="" className="w-8 rounded-full"/>
-        <p className='flex-1 text-lg text-white flex items-center gap-2'>
-            {selectedUser.fullName}
-            {onlineUsers.includes(selectedUser._id) && <span className="w-2 h-2 rounded-full bg-green-500"></span>}
-        </p>
+        <div className='flex-1'>
+            <p className='text-lg text-white flex items-center gap-2'>
+                {selectedUser.fullName}
+                {onlineUsers.includes(selectedUser._id) && <span className="w-2 h-2 rounded-full bg-green-500"></span>}
+            </p>
+            {sessionStartTime && (
+                <p className={`text-xs ${isExpired ? 'text-red-500' : 'text-yellow-500'}`}>
+                    {isExpired ? "Session Expired" : `Time Remaining: ${formatTime(timeLeft)}`}
+                </p>
+            )}
+        </div>
         <img onClick={()=> setSelectedUser(null)} src={assets.arrow_icon} alt="" className='md:hidden max-w-7'/>
         <img src={assets.help_icon} alt="" className='max-md:hidden max-w-5'/>
       </div>
       {/* ------- chat area ------- */}
-      <div className='flex flex-col h-[calc(100%-120px)] overflow-y-scroll p-3 pb-6'>
+      <div className='flex flex-col h-[calc(100%-140px)] overflow-y-scroll p-3 pb-6'>
         {messages.map((msg, index)=>(
             <div key={index} className={`flex items-end gap-2 justify-end ${msg.senderId !== authUser._id && 'flex-row-reverse'}`}>
                 {msg.image ? (
@@ -79,20 +124,42 @@ const ChatContainer = () => {
                 </div>
             </div>
         ))}
+
+        {authUser.role === "client" && isNotStarted && (
+            <div className='text-center p-4 bg-white/5 rounded-lg text-stone-400 text-sm italic mx-auto max-w-[80%]'>
+                Waiting for the astrologer to start the session...
+            </div>
+        )}
+
         <div ref={scrollEnd}></div>
       </div>
 
 {/* ------- bottom area ------- */}
-    <div className='absolute bottom-0 left-0 right-0 flex items-center gap-3 p-3'>
-        <div className='flex-1 flex items-center bg-gray-100/12 px-3 rounded-full'>
-            <input onChange={(e)=> setInput(e.target.value)} value={input} onKeyDown={(e)=> e.key === "Enter" ? handleSendMessage(e) : null} type="text" placeholder="Send a message" 
-            className='flex-1 text-sm p-3 border-none rounded-lg outline-none text-white placeholder-gray-400'/>
-            <input onChange={handleSendImage} type="file" id='image' accept='image/png, image/jpeg' hidden/>
-            <label htmlFor="image">
-                <img src={assets.gallery_icon} alt="" className="w-5 mr-2 cursor-pointer"/>
-            </label>
+    <div className='absolute bottom-0 left-0 right-0 p-3 bg-stone-900/40 backdrop-blur-md'>
+        <div className='flex items-center gap-3'>
+            <div className={`flex-1 flex items-center bg-gray-100/12 px-3 rounded-full ${isDisabled ? 'opacity-50 pointer-events-none' : ''}`}>
+                <input 
+                    onChange={(e)=> setInput(e.target.value)} 
+                    value={input} 
+                    onKeyDown={(e)=> e.key === "Enter" && !isDisabled ? handleSendMessage(e) : null} 
+                    type="text" 
+                    placeholder={isDisabled ? (isExpired ? "Session Over" : "Locked") : "Send a message"} 
+                    disabled={isDisabled}
+                    className='flex-1 text-sm p-3 border-none rounded-lg outline-none text-white placeholder-gray-400'/>
+                
+                <input onChange={handleSendImage} type="file" id='image' accept='image/png, image/jpeg' hidden disabled={isDisabled}/>
+                <label htmlFor="image">
+                    <img src={assets.gallery_icon} alt="" className={`w-5 mr-2 ${isDisabled ? 'grayscale' : 'cursor-pointer'}`}/>
+                </label>
+            </div>
+            <img 
+                onClick={!isDisabled ? handleSendMessage : null} 
+                src={assets.send_button} 
+                alt="" 
+                className={`w-7 ${isDisabled ? 'opacity-50 grayscale' : 'cursor-pointer'}`} 
+            />
         </div>
-        <img onClick={handleSendMessage} src={assets.send_button} alt="" className="w-7 cursor-pointer" />
+        {isExpired && <p className='text-[10px] text-center text-red-400 mt-2 uppercase tracking-widest'>Encryption expired / Session Closed</p>}
     </div>
 
 

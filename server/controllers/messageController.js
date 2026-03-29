@@ -1,5 +1,6 @@
 import Message from "../models/Message.js";
 import User from "../models/User.js";
+import Session from "../models/Session.js";
 import cloudinary from "../lib/cloudinary.js"
 import { io, userSocketMap } from "../server.js";
 
@@ -8,7 +9,13 @@ import { io, userSocketMap } from "../server.js";
 export const getUsersForSidebar = async (req, res)=>{
     try {
         const userId = req.user._id;
-        const filteredUsers = await User.find({_id: {$ne: userId}}).select("-password");
+        const userRole = req.user.role;
+
+        // Filter users who have the opposite role (same roles can't see each other)
+        const filteredUsers = await User.find({
+            _id: { $ne: userId },
+            role: { $ne: userRole } 
+        }).select("-password").sort({ createdAt: 1 });
 
         // Count number of messages not seen
         const unseenMessages = {}
@@ -37,10 +44,19 @@ export const getMessages = async (req, res) =>{
                 {senderId: myId, receiverId: selectedUserId},
                 {senderId: selectedUserId, receiverId: myId},
             ]
-        })
+        }).sort({ createdAt: 1 });
+
+        // Mark messages as seen
         await Message.updateMany({senderId: selectedUserId, receiverId: myId}, {seen: true});
 
-        res.json({success: true, messages})
+        const session = await Session.findOne({
+            $or: [
+                { astrologerId: myId, clientId: selectedUserId },
+                { astrologerId: selectedUserId, clientId: myId }
+            ]
+        });
+
+        res.json({ success: true, messages, sessionStartTime: session?.startTime })
 
 
     } catch (error) {
@@ -68,6 +84,41 @@ export const sendMessage = async (req, res) =>{
         const receiverId = req.params.id;
         const senderId = req.user._id;
         const senderName = req.user.fullName;
+        const senderRole = req.user.role;
+
+        // Fetch receiver details to confirm their role
+        const receiver = await User.findById(receiverId);
+        if (!receiver) {
+            return res.status(404).json({ success: false, message: "Receiver not found" });
+        }
+
+        // Determine astrologer and client IDs
+        const astrologerId = senderRole === "astrologer" ? senderId : receiverId;
+        const clientId = senderRole === "client" ? senderId : receiverId;
+
+        // Check for an existing session
+        let session = await Session.findOne({ astrologerId, clientId });
+
+        // Logic check: Chat initiation and expiry
+        if (!session) {
+            // Only an astrologer can start the chat
+            if (senderRole === "astrologer") {
+                session = await Session.create({
+                    astrologerId,
+                    clientId,
+                    startTime: new Date()
+                });
+            } else {
+                return res.status(403).json({ success: false, message: "Chat must be initiated by the astrologer." });
+            }
+        } else {
+            // If session exists, check if it's expired (3 minutes = 180,000ms)
+            const currentTime = new Date();
+            const elapsedTime = currentTime - session.startTime;
+            if (elapsedTime > 3 * 60 * 1000) {
+                return res.status(403).json({ success: false, message: "Chat session has expired. Both users are now blocked from messaging." });
+            }
+        }
 
         let imageUrl;
         if(image){
@@ -90,7 +141,7 @@ export const sendMessage = async (req, res) =>{
             })
         }
 
-        res.json({success: true, newMessage});
+        res.json({success: true, newMessage, sessionStartTime: session.startTime});
 
     } catch (error) {
         console.log(error.message);

@@ -11,6 +11,7 @@ export const ChatProvider = ({ children })=>{
     const [users, setUsers] = useState([]);//chat ke liye available users
     const [selectedUser, setSelectedUser] = useState(null)//currently chat opened user
     const [unseenMessages, setUnseenMessages] = useState({})//unread messages count
+    const [sessionStartTime, setSessionStartTime] = useState(null);//chat start time for timer
 
     const {socket, axios} = useContext(AuthContext); //axios me token already set hota hai from AuthContext
 
@@ -30,9 +31,11 @@ export const ChatProvider = ({ children })=>{
     // function to get messages for selected user
     const getMessages = async (userId)=>{//userId -> kis user ke liye message chahiye
         try {
+            setSessionStartTime(null); // Reset when fetching new user messages
             const { data } = await axios.get(`/api/messages/${userId}`);
             if (data.success){
                 setMessages(data.messages)
+                setSessionStartTime(data.sessionStartTime)
             }
         } catch (error) {
             toast.error(error.message)
@@ -45,6 +48,7 @@ export const ChatProvider = ({ children })=>{
             const {data} = await axios.post(`/api/messages/send/${selectedUser._id}`, messageData);
             if(data.success){
                 setMessages((prevMessages)=>[...prevMessages, data.newMessage])
+                if(data.sessionStartTime) setSessionStartTime(data.sessionStartTime)
             }else{
                 toast.error(data.message);
             }
@@ -95,7 +99,7 @@ export const ChatProvider = ({ children })=>{
     },[socket, selectedUser])
 
     const value = {
-        messages, users, selectedUser, getUsers, getMessages, sendMessage, setSelectedUser, unseenMessages, setUnseenMessages
+        messages, users, selectedUser, getUsers, getMessages, sendMessage, setSelectedUser, unseenMessages, setUnseenMessages, sessionStartTime
     }
 
     return (
