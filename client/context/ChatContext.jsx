@@ -57,46 +57,42 @@ export const ChatProvider = ({ children })=>{
         }
     }
 
-    // function to subscribe to messages for selected user
-// Jab doosra user aapko live message bhejta hai, to usse socket ke zariye turant sunna aur UI me turant dikhana ka kaam subscribeToMessages() karta hai.
+    // Subscribe to real-time messages and session events
+    const subscribeToMessages = () => {
+        if (!socket) return;
 
-// Yaani:
-// Chat box me real-time me message dikhana (without refresh)
-// Unseen counter badhaana (agar message kisi aur ka hai)
-// Message ko "seen" mark karna (agar message screen pe hai
-
-
-    const subscribeToMessages = async () =>{
-        if(!socket) return; //socket ka hona zaroori hai kyunki ye real-time events sunta hai.
-
-
-        //newMessage event pr listen krega jo backend se aayega
-        socket.on("newMessage", (newMessage)=>{
-            if(selectedUser && newMessage.senderId === selectedUser._id){
+        socket.on("newMessage", (newMessage) => {
+            if (selectedUser && newMessage.senderId === selectedUser._id) {
                 newMessage.seen = true;
-                setMessages((prevMessages)=> [...prevMessages, newMessage]);
+                setMessages((prev) => [...prev, newMessage]);
                 axios.put(`/api/messages/mark/${newMessage._id}`);
-            }else{
-                console.log("newMessage details ->",newMessage)
+            } else {
                 toast.success(`New message from ${newMessage.senderName || "User"}`);
-                setUnseenMessages((prevUnseenMessages)=>({
-                    ...prevUnseenMessages, [newMessage.senderId] : prevUnseenMessages[newMessage.senderId] ? prevUnseenMessages[newMessage.senderId] + 1 : 1
-                }))
+                setUnseenMessages((prev) => ({
+                    ...prev,
+                    [newMessage.senderId]: (prev[newMessage.senderId] || 0) + 1,
+                }));
             }
-        })
-    }
+        });
 
-    // function to unsubscribe from messages
-    //Jab bhi aap chat user change karte ho (ya component unmount hota hai),
-// toh purane user ke messages sunna band karna zaroori hai.
-    const unsubscribeFromMessages = ()=>{ //to avoid memory leak
-        if(socket) socket.off("newMessage");
-    }
+        // Bug fix: client receives this event when astrologer sends the first message.
+        // Updates sessionStartTime instantly so the timer starts and chat unlocks
+        // without any manual refresh.
+        socket.on("sessionStarted", ({ startTime }) => {
+            setSessionStartTime(startTime);
+        });
+    };
 
-    useEffect(()=>{
+    const unsubscribeFromMessages = () => {
+        if (!socket) return;
+        socket.off("newMessage");
+        socket.off("sessionStarted");
+    };
+
+    useEffect(() => {
         subscribeToMessages();
-        return ()=> unsubscribeFromMessages();
-    },[socket, selectedUser])
+        return () => unsubscribeFromMessages();
+    }, [socket, selectedUser])
 
     const value = {
         messages, users, selectedUser, getUsers, getMessages, sendMessage, setSelectedUser, unseenMessages, setUnseenMessages, sessionStartTime

@@ -1,102 +1,128 @@
 import { createContext, useEffect, useState } from "react";
-import axios from 'axios'
+import axios from "axios";
 import toast from "react-hot-toast";
-import { io } from "socket.io-client"
-
+import { io } from "socket.io-client";
 
 const backendUrl = import.meta.env.VITE_BACKEND_URL;
+
 axios.defaults.baseURL = backendUrl;
+// Always send cookies with every request
+axios.defaults.withCredentials = true;
 
 export const AuthContext = createContext();
 
-export const AuthProvider = ({ children })=>{
-
-    const [token, setToken] = useState(localStorage.getItem("token"));
+export const AuthProvider = ({ children }) => {
     const [authUser, setAuthUser] = useState(null);
     const [onlineUsers, setOnlineUsers] = useState([]);
     const [socket, setSocket] = useState(null);
+    // Keep a copy of the access token in memory (NOT localStorage) for socket auth
+    const [accessToken, setAccessToken] = useState(null);
 
-    // Check if user is authenticated and if so, set the user data and connect the socket
+    // Silently refresh the access token using the HttpOnly refresh cookie
+    const refreshToken = async () => {
+        try {
+            const { data } = await axios.post("/api/auth/refresh");
+            if (data.success) {
+                setAccessToken(data.token);
+                axios.defaults.headers.common["Authorization"] = `Bearer ${data.token}`;
+                return data.token;
+            }
+        } catch {
+            // Refresh failed — user must log in again
+        }
+        return null;
+    };
+
+    // Check auth on mount — uses the HttpOnly access token cookie
     const checkAuth = async () => {
         try {
             const { data } = await axios.get("/api/auth/check");
             if (data.success) {
-                setAuthUser(data.user)
-                connectSocket(data.user)
+                setAuthUser(data.user);
+                const token = await refreshToken();
+                connectSocket(data.user, token);
             }
         } catch (error) {
-            toast.error(error.message)
+            // 401 is expected when not logged in — don't toast for it
+            if (error?.response?.status !== 401) {
+                toast.error(error.message);
+            }
         }
-    }
+    };
 
-// Login function to handle user authentication and socket connection
-
-const login = async (state, credentials)=>{
-    try {
-        const { data } = await axios.post(`/api/auth/${state}`, credentials);
-        if (data.success){
-            setAuthUser(data.userData);
-            connectSocket(data.userData);
-            axios.defaults.headers.common["token"] = data.token; //ab har future call mai token auto set hojayega
-            setToken(data.token);
-            localStorage.setItem("token", data.token)//token ko browser mai store krdiya taki reload krne pr login 
-            toast.success(data.message)
-        }else{
-            toast.error(data.message)
+    const login = async (state, credentials) => {
+        try {
+            const { data } = await axios.post(`/api/auth/${state}`, credentials);
+            if (data.success) {
+                setAuthUser(data.userData);
+                setAccessToken(data.token);
+                // Set Authorization header for all future requests
+                axios.defaults.headers.common["Authorization"] = `Bearer ${data.token}`;
+                connectSocket(data.userData, data.token);
+                toast.success(data.message);
+            } else {
+                toast.error(data.message);
+            }
+        } catch (error) {
+            const msg = error?.response?.data?.message || error.message;
+            toast.error(msg);
         }
-    } catch (error) {
-        toast.error(error.message)
-    }
-}
+    };
 
-// Logout function to handle user logout and socket disconnection
-
-    const logout = async () =>{
-        localStorage.removeItem("token");
-        setToken(null);
+    const logout = async () => {
+        try {
+            await axios.post("/api/auth/logout");
+        } catch {
+            // Best-effort server-side cookie clear
+        }
         setAuthUser(null);
-        setOnlineUsers([]);//doubt
-        axios.defaults.headers.common["token"] = null;
-        toast.success("Logged out successfully")
-        socket.disconnect();
-    }
+        setAccessToken(null);
+        setOnlineUsers([]);
+        delete axios.defaults.headers.common["Authorization"];
+        toast.success("Logged out successfully");
+        if (socket) socket.disconnect();
+        setSocket(null);
+    };
 
-    // Update profile function to handle user profile updates
-
-    const updateProfile = async (body)=>{
+    const updateProfile = async (body) => {
         try {
             const { data } = await axios.put("/api/auth/update-profile", body);
-            if(data.success){
+            if (data.success) {
                 setAuthUser(data.user);
-                toast.success("Profile updated successfully")
+                toast.success("Profile updated successfully");
             }
         } catch (error) {
-            toast.error(error.message)
+            toast.error(error.message);
         }
-    }
+    };
 
-    // Connect socket function to handle socket connection and online users updates
-    const connectSocket = (userData)=>{
-        if(!userData || socket?.connected) return;
-        const newSocket = io(backendUrl, {
-            query: {
-                userId: userData._id,
+    // Connect socket — send access token via socket auth (not query param)
+    const connectSocket = (userData, token) => {
+        if (!userData) return;
+        // Clean up any stale socket before creating a new one
+        setSocket(prev => {
+            if (prev) {
+                prev.off();
+                prev.disconnect();
             }
+            return prev;
+        });
+        const newSocket = io(backendUrl, {
+            withCredentials: true,
+            auth: { token },
         });
         newSocket.connect();
         setSocket(newSocket);
 
-        newSocket.on("getOnlineUsers", (userIds)=>{
+        newSocket.on("getOnlineUsers", (userIds) => {
             setOnlineUsers(userIds);
-        })
-    }
+        });
+    };
 
-    useEffect(()=>{
-        if(token){
-            axios.defaults.headers.common["token"] = token;
-        }
+    useEffect(() => {
+        // On mount: try to restore session via cookie (no localStorage token)
         checkAuth();
-    },[])
+    }, []);
 
     const value = {
         axios,
@@ -105,14 +131,9 @@ const login = async (state, credentials)=>{
         socket,
         login,
         logout,
-        updateProfile
-    }
+        updateProfile,
+        refreshToken,
+    };
 
-    return (
-        <AuthContext.Provider value={value}>
-            {children}
-        </AuthContext.Provider>
-          )
-}
-
-//“Main axios.defaults.headers.common ko pehle set karta hoon kyunki mujhe ensure karna hota hai ki aage koi bhi API call kare — chahe React component se ya socket se — wo token ke sath jaaye. Fir mai localStorage aur React state me token store karta hoon for persistence and rendering logic.
+    return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+};

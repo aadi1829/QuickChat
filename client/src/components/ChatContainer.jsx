@@ -1,175 +1,329 @@
 import React, { useContext, useEffect, useRef, useState } from 'react'
-import assets, { messagesDummyData } from '../assets/assets'
+import assets from '../assets/assets'
 import { formatMessageTime } from '../lib/utils'
 import { ChatContext } from '../../context/ChatContext'
 import { AuthContext } from '../../context/AuthContext'
 import toast from 'react-hot-toast'
 
 const ChatContainer = () => {
-
-    const { messages, selectedUser, setSelectedUser, sendMessage, 
-        getMessages, sessionStartTime} = useContext(ChatContext)
-
+    const { messages, selectedUser, setSelectedUser, sendMessage, getMessages, sessionStartTime } =
+        useContext(ChatContext)
     const { authUser, onlineUsers } = useContext(AuthContext)
 
-    const scrollEnd = useRef()
+    const scrollEnd = useRef(null)
+    const fileInputRef = useRef(null)
 
-    const [input, setInput] = useState('');
-    const [timeLeft, setLeftTime] = useState(null)
+    const [input, setInput] = useState('')
+    const [imagePreview, setImagePreview] = useState(null) // { dataUrl, file }
+    const [timeLeft, setTimeLeft] = useState(null)
+    const [isSending, setIsSending] = useState(false)
 
-    // Handle sending a message
-    const handleSendMessage = async (e)=>{
-        e.preventDefault();
-        if(input.trim() === "") return null;
-        await sendMessage({text: input.trim()});
-        setInput("")
-    }
+    // ─── Timer ───────────────────────────────────────────────────────────────
+    useEffect(() => {
+        if (!sessionStartTime) { setTimeLeft(null); return }
 
-    // Timer logic
-    useEffect(()=>{
-        let interval;
-        if(sessionStartTime){
-            const startTime = new Date(sessionStartTime).getTime();
-            const endTime = startTime + 3 * 60 * 1000;
+        const endTime = new Date(sessionStartTime).getTime() + 3 * 60 * 1000
 
-            interval = setInterval(()=>{
-                const now = new Date().getTime();
-                const diff = endTime - now;
+        // Declare `id` with `let` BEFORE calling `tick()` so the closure never
+        // hits a temporal dead zone error (which caused the white-screen crash
+        // when selecting a user whose session had already expired).
+        let id
 
-                if(diff <= 0){
-                    setLeftTime(0);
-                    clearInterval(interval)
-                }else{
-                    setLeftTime(diff)
-                }
-            }, 1000)
-        }else{
-            setLeftTime(null)
+        const tick = () => {
+            const diff = endTime - Date.now()
+            setTimeLeft(diff <= 0 ? 0 : diff)
+            if (diff <= 0) clearInterval(id)
         }
 
-        return ()=> clearInterval(interval)
-    },[sessionStartTime])
+        tick() // run immediately so there's no 1-second blank gap
+        id = setInterval(tick, 1000)
+        return () => clearInterval(id)
+    }, [sessionStartTime])
+
+    // ─── Load messages when user selected ────────────────────────────────────
+    useEffect(() => {
+        if (selectedUser) getMessages(selectedUser._id)
+    }, [selectedUser])
+
+    // ─── Auto-scroll ─────────────────────────────────────────────────────────
+    useEffect(() => {
+        scrollEnd.current?.scrollIntoView({ behavior: 'smooth' })
+    }, [messages])
+
+    // ─── Derived state ────────────────────────────────────────────────────────
+    const isExpired = timeLeft === 0
+    const isNotStarted = !sessionStartTime
+    const isClientLocked = authUser.role === 'client' && isNotStarted
+    const isDisabled = isExpired || isClientLocked || isSending
 
     const formatTime = (ms) => {
-        if (ms === null || ms < 0) return "00:00";
-        const totalSeconds = Math.floor(ms / 1000);
-        const minutes = Math.floor(totalSeconds / 60);
-        const seconds = totalSeconds % 60;
-        return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-    };
-
-    const isExpired = timeLeft === 0;
-    const isNotStarted = !sessionStartTime;
-    const isDisabled = isExpired || (authUser.role === "client" && isNotStarted);
-
-    // Handle sending an image
-    const handleSendImage = async (e) =>{
-        const file = e.target.files[0];
-        if(!file || !file.type.startsWith("image/")){
-            toast.error("select an image file")
-            return;
-        }
-        const reader = new FileReader();
-
-        reader.onloadend = async ()=>{
-            await sendMessage({image: reader.result})
-            e.target.value = ""
-        }
-        reader.readAsDataURL(file)
+        if (ms === null || ms < 0) return '00:00'
+        const s = Math.floor(ms / 1000)
+        const m = Math.floor(s / 60)
+        return `${String(m).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
     }
 
-    useEffect(()=>{
-        if(selectedUser){
-            getMessages(selectedUser._id)
-        }
-    },[selectedUser])
+    const timerColor = () => {
+        if (isExpired) return 'text-red-500'
+        if (timeLeft !== null && timeLeft < 30_000) return 'text-orange-400'
+        return 'text-emerald-400'
+    }
 
-    useEffect(()=>{
-        if(scrollEnd.current && messages){
-            scrollEnd.current.scrollIntoView({ behavior: "smooth"})
-        }
-    },[messages])
+    // ─── Handlers ─────────────────────────────────────────────────────────────
+    const handleSendMessage = async (e) => {
+        e?.preventDefault()
+        if (isDisabled) return
+        if (!input.trim() && !imagePreview) return
 
-  return selectedUser ? (
-    <div className='h-full overflow-scroll relative backdrop-blur-lg'>
-      {/* ------- header ------- */}
-      <div className='flex items-center gap-3 py-3 mx-4 border-b border-stone-500'>
-        <img src={selectedUser.profilePic || assets.avatar_icon} alt="" className="w-8 rounded-full"/>
-        <div className='flex-1'>
-            <p className='text-lg text-white flex items-center gap-2'>
-                {selectedUser.fullName}
-                {onlineUsers.includes(selectedUser._id) && <span className="w-2 h-2 rounded-full bg-green-500"></span>}
-            </p>
-            {sessionStartTime && (
-                <p className={`text-xs ${isExpired ? 'text-red-500' : 'text-yellow-500'}`}>
-                    {isExpired ? "Session Expired" : `Time Remaining: ${formatTime(timeLeft)}`}
-                </p>
-            )}
-        </div>
-        <img onClick={()=> setSelectedUser(null)} src={assets.arrow_icon} alt="" className='md:hidden max-w-7'/>
-        <img src={assets.help_icon} alt="" className='max-md:hidden max-w-5'/>
-      </div>
-      {/* ------- chat area ------- */}
-      <div className='flex flex-col h-[calc(100%-140px)] overflow-y-scroll p-3 pb-6'>
-        {messages.map((msg, index)=>(
-            <div key={index} className={`flex items-end gap-2 justify-end ${msg.senderId !== authUser._id && 'flex-row-reverse'}`}>
-                {msg.image ? (
-                    <img src={msg.image} alt="" className='max-w-[230px] border border-gray-700 rounded-lg overflow-hidden mb-8'/>
-                ):(
-                    <p className={`p-2 max-w-[200px] md:text-sm font-light rounded-lg mb-8 break-all bg-violet-500/30 text-white ${msg.senderId === authUser._id ? 'rounded-br-none' : 'rounded-bl-none'}`}>{msg.text}</p>
+        setIsSending(true)
+        try {
+            const payload = {}
+            if (input.trim()) payload.text = input.trim()
+            if (imagePreview) payload.image = imagePreview.dataUrl
+
+            await sendMessage(payload)
+            setInput('')
+            setImagePreview(null)
+        } finally {
+            setIsSending(false)
+        }
+    }
+
+    const handleImageSelect = (e) => {
+        const file = e.target.files[0]
+        if (!file || !file.type.startsWith('image/')) {
+            toast.error('Please select an image file')
+            return
+        }
+        const reader = new FileReader()
+        reader.onloadend = () => setImagePreview({ dataUrl: reader.result, file })
+        reader.readAsDataURL(file)
+        if (fileInputRef.current) fileInputRef.current.value = '' // reset so the same file can be reselected
+    }
+
+    const handleKeyDown = (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) handleSendMessage(e)
+    }
+
+    const isMyMessage = (msg) => msg.senderId === authUser._id
+
+    // ─── Render ───────────────────────────────────────────────────────────────
+    if (!selectedUser) {
+        return (
+            <div className="flex flex-col items-center justify-center gap-3 text-gray-500 bg-white/5 max-md:hidden h-full">
+                <img src={assets.logo_icon} className="w-16 opacity-60" alt="" />
+                <p className="text-lg font-medium text-white/70">Select a conversation</p>
+                <p className="text-sm text-white/30">Your messages will appear here</p>
+            </div>
+        )
+    }
+
+    const placeholderText = isExpired
+        ? 'Session over'
+        : isClientLocked
+        ? 'Waiting for astrologer to start…'
+        : 'Type a message…'
+
+    return (
+        <div className="flex flex-col h-full bg-gradient-to-b from-stone-900/60 to-stone-950/80 backdrop-blur-lg">
+
+            {/* ── Header ── */}
+            <div className="flex items-center gap-3 px-4 py-3 border-b border-white/10 bg-white/5 shrink-0">
+                <div className="relative">
+                    <img
+                        src={selectedUser.profilePic || assets.avatar_icon}
+                        alt=""
+                        className="w-10 h-10 rounded-full object-cover ring-2 ring-violet-500/40"
+                    />
+                    {onlineUsers.includes(selectedUser._id) && (
+                        <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-400 rounded-full border-2 border-stone-900" />
+                    )}
+                </div>
+
+                <div className="flex-1 min-w-0">
+                    <p className="text-white font-semibold truncate">{selectedUser.fullName}</p>
+                    {sessionStartTime ? (
+                        <p className={`text-xs font-mono tabular-nums ${timerColor()}`}>
+                            {isExpired ? '⏱ Session expired' : `⏱ ${formatTime(timeLeft)} remaining`}
+                        </p>
+                    ) : (
+                        <p className="text-xs text-white/40">
+                            {onlineUsers.includes(selectedUser._id) ? 'Online' : 'Offline'}
+                        </p>
+                    )}
+                </div>
+
+                <button
+                    onClick={() => setSelectedUser(null)}
+                    className="md:hidden p-1 rounded-lg hover:bg-white/10 transition"
+                >
+                    <img src={assets.arrow_icon} alt="back" className="w-5" />
+                </button>
+            </div>
+
+            {/* ── Messages ── */}
+            <div className="flex-1 overflow-y-auto px-4 py-4 space-y-1">
+
+                {isClientLocked && messages.length === 0 && (
+                    <div className="flex justify-center mt-8">
+                        <div className="text-center px-5 py-4 bg-white/5 border border-white/10 rounded-2xl max-w-xs">
+                            <p className="text-white/50 text-sm">
+                                Waiting for the astrologer to start the session…
+                            </p>
+                        </div>
+                    </div>
                 )}
-                <div className="text-center text-xs">
-                    <img src={msg.senderId === authUser._id ? authUser?.profilePic || assets.avatar_icon : selectedUser?.profilePic || assets.avatar_icon} alt="" className='w-7 rounded-full' />
-                    <p className='text-gray-500'>{formatMessageTime(msg.createdAt)}</p>
+
+                {messages.map((msg, i) => {
+                    const mine = isMyMessage(msg)
+                    const showAvatar =
+                        i === 0 || messages[i - 1]?.senderId !== msg.senderId
+                    const avatar = mine
+                        ? authUser?.profilePic || assets.avatar_icon
+                        : selectedUser?.profilePic || assets.avatar_icon
+
+                    return (
+                        <div
+                            key={msg._id || i}
+                            className={`flex items-end gap-2 ${mine ? 'justify-end' : 'justify-start'}`}
+                        >
+                            {/* Avatar — other side */}
+                            {!mine && (
+                                <div className="w-7 h-7 shrink-0 self-end mb-1">
+                                    {showAvatar ? (
+                                        <img src={avatar} alt="" className="w-7 h-7 rounded-full object-cover" />
+                                    ) : (
+                                        <div className="w-7" />
+                                    )}
+                                </div>
+                            )}
+
+                            {/* Bubble */}
+                            <div className={`flex flex-col max-w-[70%] ${mine ? 'items-end' : 'items-start'}`}>
+                                {msg.image && (
+                                    <img
+                                        src={msg.image}
+                                        alt="shared"
+                                        className={`max-w-[220px] rounded-2xl object-cover mb-0.5 cursor-pointer hover:opacity-90 transition
+                                            ${mine ? 'rounded-br-sm' : 'rounded-bl-sm'}`}
+                                        onClick={() => window.open(msg.image, '_blank')}
+                                    />
+                                )}
+                                {msg.text && (
+                                    <div
+                                        className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed break-words
+                                            ${mine
+                                                ? 'bg-violet-600 text-white rounded-br-sm'
+                                                : 'bg-white/10 text-white/90 rounded-bl-sm'
+                                            }`}
+                                    >
+                                        {msg.text}
+                                    </div>
+                                )}
+                                <span className="text-[10px] text-white/30 mt-0.5 px-1">
+                                    {formatMessageTime(msg.createdAt)}
+                                    {mine && (
+                                        <span className="ml-1">{msg.seen ? '✓✓' : '✓'}</span>
+                                    )}
+                                </span>
+                            </div>
+
+                            {/* Avatar — my side */}
+                            {mine && (
+                                <div className="w-7 h-7 shrink-0 self-end mb-1">
+                                    {showAvatar ? (
+                                        <img src={avatar} alt="" className="w-7 h-7 rounded-full object-cover" />
+                                    ) : (
+                                        <div className="w-7" />
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    )
+                })}
+
+                <div ref={scrollEnd} />
+            </div>
+
+            {/* ── Image Preview ── */}
+            {imagePreview && (
+                <div className="px-4 pb-2 shrink-0">
+                    <div className="relative inline-block">
+                        <img
+                            src={imagePreview.dataUrl}
+                            alt="preview"
+                            className="h-24 rounded-xl object-cover border border-white/20"
+                        />
+                        <button
+                            onClick={() => setImagePreview(null)}
+                            className="absolute -top-2 -right-2 w-5 h-5 bg-red-500 rounded-full text-white text-xs flex items-center justify-center hover:bg-red-600 transition"
+                        >
+                            ✕
+                        </button>
+                    </div>
+                </div>
+            )}
+
+            {/* ── Input bar ── */}
+            <div className="px-4 py-3 border-t border-white/10 bg-white/5 shrink-0">
+                {isExpired && (
+                    <p className="text-center text-xs text-red-400/80 mb-2 uppercase tracking-widest">
+                        Session closed — messaging disabled
+                    </p>
+                )}
+                <div className="flex items-center gap-2">
+                    {/* Hidden file input */}
+                    <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/png,image/jpeg,image/webp,image/gif"
+                        className="hidden"
+                        onChange={handleImageSelect}
+                        disabled={isDisabled}
+                    />
+
+                    {/* Image attach button */}
+                    <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={isDisabled}
+                        className={`p-2 rounded-full transition shrink-0
+                            ${isDisabled
+                                ? 'opacity-30 cursor-not-allowed'
+                                : 'hover:bg-white/10 cursor-pointer'}`}
+                    >
+                        <img src={assets.gallery_icon} alt="attach" className="w-5 h-5" />
+                    </button>
+
+                    {/* Text input */}
+                    <input
+                        type="text"
+                        value={input}
+                        onChange={(e) => setInput(e.target.value)}
+                        onKeyDown={handleKeyDown}
+                        placeholder={placeholderText}
+                        disabled={isDisabled}
+                        className={`flex-1 bg-white/8 text-white text-sm px-4 py-2.5 rounded-full outline-none
+                            placeholder-white/30 transition border border-white/10 focus:border-violet-500/60
+                            ${isDisabled ? 'opacity-40 cursor-not-allowed' : ''}`}
+                    />
+
+                    {/* Send button */}
+                    <button
+                        type="button"
+                        onClick={handleSendMessage}
+                        disabled={isDisabled || (!input.trim() && !imagePreview)}
+                        className={`p-2 shrink-0 transition rounded-full
+                            ${isDisabled || (!input.trim() && !imagePreview)
+                                ? 'opacity-30 cursor-not-allowed'
+                                : 'hover:scale-105 cursor-pointer'}`}
+                    >
+                        <img src={assets.send_button} alt="send" className="w-7 h-7" />
+                    </button>
                 </div>
             </div>
-        ))}
-
-        {authUser.role === "client" && isNotStarted && (
-            <div className='text-center p-4 bg-white/5 rounded-lg text-stone-400 text-sm italic mx-auto max-w-[80%]'>
-                Waiting for the astrologer to start the session...
-            </div>
-        )}
-
-        <div ref={scrollEnd}></div>
-      </div>
-
-{/* ------- bottom area ------- */}
-    <div className='absolute bottom-0 left-0 right-0 p-3 bg-stone-900/40 backdrop-blur-md'>
-        <div className='flex items-center gap-3'>
-            <div className={`flex-1 flex items-center bg-gray-100/12 px-3 rounded-full ${isDisabled ? 'opacity-50 pointer-events-none' : ''}`}>
-                <input 
-                    onChange={(e)=> setInput(e.target.value)} 
-                    value={input} 
-                    onKeyDown={(e)=> e.key === "Enter" && !isDisabled ? handleSendMessage(e) : null} 
-                    type="text" 
-                    placeholder={isDisabled ? (isExpired ? "Session Over" : "Locked") : "Send a message"} 
-                    disabled={isDisabled}
-                    className='flex-1 text-sm p-3 border-none rounded-lg outline-none text-white placeholder-gray-400'/>
-                
-                <input onChange={handleSendImage} type="file" id='image' accept='image/png, image/jpeg' hidden disabled={isDisabled}/>
-                <label htmlFor="image">
-                    <img src={assets.gallery_icon} alt="" className={`w-5 mr-2 ${isDisabled ? 'grayscale' : 'cursor-pointer'}`}/>
-                </label>
-            </div>
-            <img 
-                onClick={!isDisabled ? handleSendMessage : null} 
-                src={assets.send_button} 
-                alt="" 
-                className={`w-7 ${isDisabled ? 'opacity-50 grayscale' : 'cursor-pointer'}`} 
-            />
         </div>
-        {isExpired && <p className='text-[10px] text-center text-red-400 mt-2 uppercase tracking-widest'>Encryption expired / Session Closed</p>}
-    </div>
-
-
-    </div>
-  ) : (
-    <div className='flex flex-col items-center justify-center gap-2 text-gray-500 bg-white/10 max-md:hidden'>
-        <img src={assets.logo_icon} className='max-w-16' alt="" />
-        <p className='text-lg font-medium text-white'>Chat anytime, anywhere</p>
-    </div>
-  )
+    )
 }
 
 export default ChatContainer

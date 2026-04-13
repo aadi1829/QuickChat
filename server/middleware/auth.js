@@ -1,34 +1,58 @@
 import User from "../models/User.js";
 import jwt from "jsonwebtoken";
 
-// Middleware to protect routes
-export const protectRoute = async (req, res, next)=>{
+// Middleware to protect routes — reads JWT from HttpOnly cookie or Authorization header
+export const protectRoute = async (req, res, next) => {
     try {
-        const token = req.headers.token;
+        // Support both HttpOnly cookie and Authorization: Bearer <token>
+        let token = req.cookies?.accessToken;
 
-        const decoded = jwt.verify(token, process.env.JWT_SECRET)
+        if (!token) {
+            const authHeader = req.headers.authorization;
+            if (authHeader && authHeader.startsWith("Bearer ")) {
+                token = authHeader.split(" ")[1];
+            }
+        }
+
+        if (!token) {
+            return res.status(401).json({ success: false, message: "Unauthorized: No token provided" });
+        }
+
+        let decoded;
+        try {
+            decoded = jwt.verify(token, process.env.JWT_SECRET);
+        } catch (err) {
+            // Return generic message — never expose JWT error details
+            return res.status(401).json({ success: false, message: "Unauthorized: Invalid or expired token" });
+        }
 
         const user = await User.findById(decoded.userId).select("-password");
-
-        if(!user) return res.json({ success: false, message: "User not found" });
+        if (!user) {
+            return res.status(401).json({ success: false, message: "Unauthorized: User not found" });
+        }
 
         req.user = user;
         next();
     } catch (error) {
-        console.log(error.message);
-        res.json({ success: false, message: error.message });
+        console.error("protectRoute error:", error.message);
+        res.status(500).json({ success: false, message: "Internal server error" });
     }
-}
+};
 
 // Middleware for role-based authorization
-export const authorizeRole = (roles) => {
+export const authorizeRole = (...roles) => {
     return (req, res, next) => {
-        if (!roles.includes(req.user.role)) {
+        if (!req.user || !roles.includes(req.user.role)) {
             return res.status(403).json({
                 success: false,
-                message: `Access denied. Role '${req.user.role}' is not authorized for this route.`
+                message: "Access denied: insufficient permissions",
             });
         }
         next();
     };
+};
+
+// Verify a refresh token and return the decoded payload (used in /refresh endpoint)
+export const verifyRefreshToken = (token) => {
+    return jwt.verify(token, process.env.JWT_REFRESH_SECRET);
 };

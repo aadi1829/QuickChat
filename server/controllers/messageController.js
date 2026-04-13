@@ -29,7 +29,7 @@ export const getUsersForSidebar = async (req, res)=>{
         res.json({success: true, users: filteredUsers, unseenMessages})
     } catch (error) {
         console.log(error.message);
-        res.json({success: false, message: error.message})
+        res.status(500).json({success: false, message: error.message})
     }
 }
 
@@ -61,7 +61,7 @@ export const getMessages = async (req, res) =>{
 
     } catch (error) {
         console.log(error.message);
-        res.json({success: false, message: error.message})
+        res.status(500).json({success: false, message: error.message})
     }
 }
 
@@ -69,11 +69,18 @@ export const getMessages = async (req, res) =>{
 export const markMessageAsSeen = async (req, res)=>{
     try {
         const { id } = req.params;
-        await Message.findByIdAndUpdate(id, {seen: true})
+        const message = await Message.findById(id);
+        if (!message) {
+            return res.status(404).json({success: false, message: "Message not found"});
+        }
+        if (message.receiverId.toString() !== req.user._id.toString()) {
+            return res.status(403).json({success: false, message: "Not authorized"});
+        }
+        await Message.findByIdAndUpdate(id, {seen: true});
         res.json({success: true})
     } catch (error) {
         console.log(error.message);
-        res.json({success: false, message: error.message})
+        res.status(500).json({success: false, message: error.message})
     }
 }
 
@@ -98,6 +105,7 @@ export const sendMessage = async (req, res) =>{
 
         // Check for an existing session
         let session = await Session.findOne({ astrologerId, clientId });
+        let isNewSession = false;
 
         // Logic check: Chat initiation and expiry
         if (!session) {
@@ -108,6 +116,7 @@ export const sendMessage = async (req, res) =>{
                     clientId,
                     startTime: new Date()
                 });
+                isNewSession = true;
             } else {
                 return res.status(403).json({ success: false, message: "Chat must be initiated by the astrologer." });
             }
@@ -132,8 +141,21 @@ export const sendMessage = async (req, res) =>{
             image: imageUrl
         })
 
+        // If this is a brand new session, notify the client immediately so their
+        // timer starts and chat unlocks — no refresh required.
+        if (isNewSession) {
+            const clientSocketId = userSocketMap[clientId.toString()];
+            if (clientSocketId) {
+                io.to(clientSocketId).emit("sessionStarted", {
+                    startTime: session.startTime,
+                    astrologerId: astrologerId.toString(),
+                    clientId: clientId.toString(),
+                });
+            }
+        }
+
         // Emit the new message to the receiver's socket
-        const receiverSocketId = userSocketMap[receiverId];
+        const receiverSocketId = userSocketMap[receiverId.toString()];
         if (receiverSocketId){
             io.to(receiverSocketId).emit("newMessage", {
                 ...newMessage.toObject(),
@@ -145,6 +167,6 @@ export const sendMessage = async (req, res) =>{
 
     } catch (error) {
         console.log(error.message);
-        res.json({success: false, message: error.message})
+        res.status(500).json({success: false, message: error.message})
     }
 }
