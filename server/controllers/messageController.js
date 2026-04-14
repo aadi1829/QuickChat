@@ -28,8 +28,8 @@ export const getUsersForSidebar = async (req, res)=>{
         await Promise.all(promises);
         res.json({success: true, users: filteredUsers, unseenMessages})
     } catch (error) {
-        console.log(error.message);
-        res.status(500).json({success: false, message: error.message})
+        console.error("[getUsersForSidebar] userId=%s | %s", req.user?._id, error.message, { stack: error.stack });
+        res.status(500).json({ success: false, message: "Failed to load contacts. Please try again later." });
     }
 }
 
@@ -60,8 +60,8 @@ export const getMessages = async (req, res) =>{
 
 
     } catch (error) {
-        console.log(error.message);
-        res.status(500).json({success: false, message: error.message})
+        console.error("[getMessages] myId=%s selectedUserId=%s | %s", req.user?._id, req.params?.id, error.message, { stack: error.stack });
+        res.status(500).json({ success: false, message: "Failed to load messages. Please try again later." });
     }
 }
 
@@ -79,8 +79,8 @@ export const markMessageAsSeen = async (req, res)=>{
         await Message.findByIdAndUpdate(id, {seen: true});
         res.json({success: true})
     } catch (error) {
-        console.log(error.message);
-        res.status(500).json({success: false, message: error.message})
+        console.error("[markMessageAsSeen] messageId=%s userId=%s | %s", req.params?.id, req.user?._id, error.message, { stack: error.stack });
+        res.status(500).json({ success: false, message: "Failed to update message status. Please try again later." });
     }
 }
 
@@ -166,7 +166,7 @@ export const sendMessage = async (req, res) =>{
         res.json({success: true, newMessage, sessionStartTime: session.startTime});
 
     } catch (error) {
-        console.log(error.message);
-        res.status(500).json({success: false, message: error.message})
+        console.error("[sendMessage] senderId=%s receiverId=%s | %s", req.user?._id, req.params?.id, error.message, { stack: error.stack });
+        res.status(500).json({ success: false, message: "Failed to send message. Please try again later." });
     }
 }

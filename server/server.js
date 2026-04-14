@@ -78,6 +78,31 @@ app.use("/api/status", (req, res) => res.send("Server is live"));
 app.use("/api/auth", userRouter);
 app.use("/api/messages", messageRouter);
 
+// 404 handler for unknown API routes
+app.use("/api/*", (req, res) => {
+    res.status(404).json({ success: false, message: `Route not found: ${req.method} ${req.originalUrl}` });
+});
+
+// Global error handler — catches unhandled errors in route handlers
+app.use((err, req, res, next) => {
+    const status = err.status || 500;
+    console.error("[GlobalErrorHandler] %s %s | status=%d | %s", req.method, req.originalUrl, status, err.message, { stack: err.stack });
+    res.status(status).json({
+        success: false,
+        message: status >= 500 ? "An unexpected error occurred. Please try again later." : err.message,
+    });
+});
+
+// Catch unhandled promise rejections and uncaught exceptions
+process.on("unhandledRejection", (reason) => {
+    console.error("[UnhandledRejection]", reason);
+});
+
+process.on("uncaughtException", (error) => {
+    console.error("[UncaughtException]", error.message, { stack: error.stack });
+    process.exit(1);
+});
+
 // Connect to MongoDB
 await connectDB();
 

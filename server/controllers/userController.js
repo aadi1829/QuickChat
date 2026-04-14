@@ -68,8 +68,8 @@ export const signup = async (req, res) => {
         const { password: _, ...userData } = newUser.toObject();
         res.status(201).json({ success: true, userData, token, message: "Account created successfully" });
     } catch (error) {
-        console.error("signup error:", error.message);
-        res.status(500).json({ success: false, message: "Internal server error" });
+        console.error("[signup] email=%s | %s", req.body?.email, error.message, { stack: error.stack });
+        res.status(500).json({ success: false, message: "Failed to create account. Please try again later." });
     }
 };
 
@@ -101,8 +101,8 @@ export const login = async (req, res) => {
         const { password: _, ...userWithoutPassword } = userData.toObject();
         res.json({ success: true, userData: userWithoutPassword, token, message: "Login successful" });
     } catch (error) {
-        console.error("login error:", error.message);
-        res.status(500).json({ success: false, message: "Internal server error" });
+        console.error("[login] email=%s | %s", req.body?.email, error.message, { stack: error.stack });
+        res.status(500).json({ success: false, message: "Login failed. Please try again later." });
     }
 };
 
@@ -158,7 +158,7 @@ export const updateProfile = async (req, res) => {
 
         res.json({ success: true, user: updatedUser });
     } catch (error) {
-        console.error("updateProfile error:", error.message);
-        res.status(500).json({ success: false, message: "Internal server error" });
+        console.error("[updateProfile] userId=%s | %s", req.user?._id, error.message, { stack: error.stack });
+        res.status(500).json({ success: false, message: "Failed to update profile. Please try again later." });
     }
 };

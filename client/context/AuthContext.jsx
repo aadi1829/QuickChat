@@ -17,6 +17,7 @@ export const AuthProvider = ({ children }) => {
     const [socket, setSocket] = useState(null);
     // Keep a copy of the access token in memory (NOT localStorage) for socket auth
     const [accessToken, setAccessToken] = useState(null);
+    const [isLoading, setIsLoading] = useState(false);
 
     // Silently refresh the access token using the HttpOnly refresh cookie
     const refreshToken = async () => {
@@ -52,11 +53,11 @@ export const AuthProvider = ({ children }) => {
 
     const login = async (state, credentials) => {
         try {
+            setIsLoading(true);
             const { data } = await axios.post(`/api/auth/${state}`, credentials);
             if (data.success) {
                 setAuthUser(data.userData);
                 setAccessToken(data.token);
-                // Set Authorization header for all future requests
                 axios.defaults.headers.common["Authorization"] = `Bearer ${data.token}`;
                 connectSocket(data.userData, data.token);
                 toast.success(data.message);
@@ -64,8 +65,14 @@ export const AuthProvider = ({ children }) => {
                 toast.error(data.message);
             }
         } catch (error) {
-            const msg = error?.response?.data?.message || error.message;
-            toast.error(msg);
+            const resData = error?.response?.data;
+            if (resData?.errors?.length) {
+                toast.error(resData.errors[0].msg);
+            } else {
+                toast.error(resData?.message || error.message);
+            }
+        } finally {
+            setIsLoading(false);
         }
     };
 
@@ -129,6 +136,7 @@ export const AuthProvider = ({ children }) => {
         authUser,
         onlineUsers,
         socket,
+        isLoading,
         login,
         logout,
         updateProfile,
