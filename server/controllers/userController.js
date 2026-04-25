@@ -2,8 +2,14 @@ import { generateToken, generateRefreshToken } from "../lib/utils.js";
 import { verifyRefreshToken } from "../middleware/auth.js";
 import User from "../models/User.js";
 import bcrypt from "bcryptjs";
-import cloudinary from "../lib/cloudinary.js";
 import { validationResult } from "express-validator";
+
+function isHttpsCloudinaryImageUrl(s) {
+    return (
+        typeof s === "string" &&
+        /^https:\/\/res\.cloudinary\.com\/.+\/image\/upload\//.test(s)
+    );
+}
 
 const COOKIE_OPTIONS = {
     httpOnly: true,           // Not accessible via JS (XSS protection)
@@ -46,11 +52,19 @@ export const signup = async (req, res) => {
             return res.status(400).json({ success: false, message: "Invalid role" });
         }
 
-        // Limit astrologer registrations to 2
+        const parsedMaxAstrologers = parseInt(process.env.MAX_ASTROLOGERS ?? "2", 10);
+        const maxAstrologers = Number.isFinite(parsedMaxAstrologers)
+            ? Math.max(1, parsedMaxAstrologers)
+            : 2;
+
+        // Limit astrologer registrations
         if (role === "astrologer") {
             const astrologerCount = await User.countDocuments({ role: "astrologer" });
-            if (astrologerCount >= 2) {
-                return res.status(403).json({ success: false, message: "Registration limit reached: only 2 astrologers are allowed." });
+            if (astrologerCount >= maxAstrologers) {
+                return res.status(403).json({
+                    success: false,
+                    message: `Registration limit reached: only ${maxAstrologers} astrologers are allowed (currently ${astrologerCount}).`,
+                });
             }
         }
 
@@ -138,6 +152,21 @@ export const checkAuth = (req, res) => {
     res.json({ success: true, user: req.user });
 };
 
+// Directory for Discover / sidebar — all astrologer profiles (no email)
+export const listAstrologers = async (req, res) => {
+    try {
+        const astrologers = await User.find({ role: "astrologer" })
+            .select("fullName profilePic bio ratingAvg ratingCount isPaidUser")
+            .sort({ fullName: 1 })
+            .lean();
+
+        res.json({ success: true, astrologers });
+    } catch (error) {
+        console.error("[listAstrologers] userId=%s | %s", req.user?._id, error.message, { stack: error.stack });
+        res.status(500).json({ success: false, message: "Failed to load astrologers." });
+    }
+};
+
 // Update user profile details
 export const updateProfile = async (req, res) => {
     try {
@@ -148,10 +177,15 @@ export const updateProfile = async (req, res) => {
         if (!profilePic) {
             updatedUser = await User.findByIdAndUpdate(userId, { bio, fullName }, { new: true }).select("-password");
         } else {
-            const upload = await cloudinary.uploader.upload(profilePic);
+            if (!isHttpsCloudinaryImageUrl(profilePic)) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Profile images must be uploaded to Cloudinary before saving.",
+                });
+            }
             updatedUser = await User.findByIdAndUpdate(
                 userId,
-                { profilePic: upload.secure_url, bio, fullName },
+                { profilePic, bio, fullName },
                 { new: true }
             ).select("-password");
         }

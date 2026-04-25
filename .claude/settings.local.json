@@ -6,7 +6,8 @@
       "Bash(node -e \"require\\('supertest'\\); console.log\\('supertest OK'\\)\")",
       "Bash(taskkill /F /IM node.exe)",
       "Bash(cmd /c \"taskkill /F /IM node.exe\")",
-      "Bash(npm test:*)"
+      "Bash(npm test:*)",
+      "Bash(timeout 15 node server.js)"
     ]
   }
 }

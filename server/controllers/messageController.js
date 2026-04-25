@@ -1,172 +1,312 @@
-import Message from "../models/Message.js";
-import User from "../models/User.js";
-import Session from "../models/Session.js";
-import cloudinary from "../lib/cloudinary.js"
-import { io, userSocketMap } from "../server.js";
+import mongoose    from "mongoose";
+import Message     from "../models/Message.js";
+import User        from "../models/User.js";
+import SlotQueue   from "../models/SlotQueue.js";
+import Booking     from "../models/Booking.js";
+import Slot        from "../models/Slot.js";
+import { io } from "../server.js";
+
+function isHttpsCloudinaryImageUrl(s) {
+    return (
+        typeof s === "string" &&
+        /^https:\/\/res\.cloudinary\.com\/.+\/image\/upload\//.test(s)
+    );
+}
+
+function remainingSecondsFromBooking(booking) {
+    if (!booking?.sessionEndTime) return null;
+    const remaining = Math.ceil((new Date(booking.sessionEndTime).getTime() - Date.now()) / 1000);
+    return Math.max(0, remaining);
+}
 
 
-// Get all users except the logged in user
-export const getUsersForSidebar = async (req, res)=>{
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function astrologerIdFromSlot(slot) {
+    if (!slot) return null;
+    const raw = slot.astrologerId;
+    if (raw && typeof raw === "object" && raw._id != null) return raw._id.toString();
+    return raw?.toString() ?? null;
+}
+
+/**
+ * Find the active SlotQueue entry that pairs these two users (client + astrologer).
+ * Uses two `{ clientId, status: "active" }` queries (compound index) instead of scanning
+ * all active queue rows globally.
+ */
+async function findActiveEntry(userAId, userBId) {
+    const a = userAId.toString();
+    const b = userBId.toString();
+
+    const [asClientA, asClientB] = await Promise.all([
+        SlotQueue.find({ clientId: userAId, status: "active" }).populate("slotId"),
+        SlotQueue.find({ clientId: userBId, status: "active" }).populate("slotId"),
+    ]);
+
+    const byId = new Map();
+    for (const entry of [...asClientA, ...asClientB]) {
+        byId.set(entry._id.toString(), entry);
+    }
+
+    for (const entry of byId.values()) {
+        const slot = entry.slotId;
+        const astrologerId = astrologerIdFromSlot(slot);
+        const clientIdStr = (entry.clientId?._id ?? entry.clientId).toString();
+        const otherIdStr = clientIdStr === a ? b : a;
+
+        if (astrologerId && astrologerId === otherIdStr) {
+            return entry;
+        }
+    }
+
+    return null;
+}
+
+
+// ─── GET /api/messages/users ──────────────────────────────────────────────────
+export const getUsersForSidebar = async (req, res) => {
     try {
-        const userId = req.user._id;
+        const userId   = req.user._id;
         const userRole = req.user.role;
 
-        // Filter users who have the opposite role (same roles can't see each other)
-        const filteredUsers = await User.find({
-            _id: { $ne: userId },
-            role: { $ne: userRole } 
-        }).select("-password").sort({ createdAt: 1 });
+        let filteredUsers = [];
 
-        // Count number of messages not seen
-        const unseenMessages = {}
-        const promises = filteredUsers.map(async (user)=>{
-            const messages = await Message.find({senderId: user._id, receiverId: userId, seen: false})
-            if(messages.length > 0){
-                unseenMessages[user._id] = messages.length;
+        if (userRole === "astrologer") {
+            // STRICT: astrologer can only see clients assigned to their own slots.
+            const slots = await Slot.find({
+                astrologerId: userId,
+                status: { $in: ["open", "active"] },
+            }).select("_id");
+
+            const slotIds = slots.map((s) => s._id);
+            if (slotIds.length === 0) {
+                return res.json({ success: true, users: [], unseenMessages: {} });
             }
-        })
-        await Promise.all(promises);
-        res.json({success: true, users: filteredUsers, unseenMessages})
+
+            const clientIds = await SlotQueue.distinct("clientId", {
+                slotId: { $in: slotIds },
+                status: { $in: ["waiting", "active"] },
+            });
+
+            if (clientIds.length === 0) {
+                return res.json({ success: true, users: [], unseenMessages: {} });
+            }
+
+            filteredUsers = await User.find({
+                _id: { $in: clientIds },
+                role: "client",
+            }).select("-password").sort({ createdAt: 1 });
+        } else {
+            // Client: show astrologers (existing behavior)
+            filteredUsers = await User.find({
+                _id:  { $ne: userId },
+                role: { $ne: userRole },
+            }).select("-password").sort({ createdAt: 1 });
+        }
+
+        // Count unseen messages per contact
+        const unseenMessages = {};
+        await Promise.all(
+            filteredUsers.map(async (user) => {
+                const count = await Message.countDocuments({ senderId: user._id, receiverId: userId, seen: false });
+                if (count > 0) unseenMessages[user._id] = count;
+            })
+        );
+
+        res.json({ success: true, users: filteredUsers, unseenMessages });
     } catch (error) {
         console.error("[getUsersForSidebar] userId=%s | %s", req.user?._id, error.message, { stack: error.stack });
         res.status(500).json({ success: false, message: "Failed to load contacts. Please try again later." });
     }
-}
+};
 
-// Get all messages for selected user
-export const getMessages = async (req, res) =>{
+
+// ─── GET /api/messages/:id ────────────────────────────────────────────────────
+// Query: `limit` (default 50, max 100), `before` = ObjectId cursor (load older than this message).
+export const getMessages = async (req, res) => {
     try {
         const { id: selectedUserId } = req.params;
         const myId = req.user._id;
 
-        const messages = await Message.find({
-            $or: [
-                {senderId: myId, receiverId: selectedUserId},
-                {senderId: selectedUserId, receiverId: myId},
-            ]
-        }).sort({ createdAt: 1 });
+        if (!mongoose.Types.ObjectId.isValid(selectedUserId)) {
+            return res.status(400).json({ success: false, message: "Invalid user id." });
+        }
 
-        // Mark messages as seen
-        await Message.updateMany({senderId: selectedUserId, receiverId: myId}, {seen: true});
+        const sid = new mongoose.Types.ObjectId(selectedUserId);
+        const rawLimit = Number.parseInt(String(req.query.limit ?? "50"), 10);
+        const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 100) : 50;
+        const beforeRaw = req.query.before;
 
-        const session = await Session.findOne({
+        const conversation = {
             $or: [
-                { astrologerId: myId, clientId: selectedUserId },
-                { astrologerId: selectedUserId, clientId: myId }
-            ]
+                { senderId: myId, receiverId: sid },
+                { senderId: sid, receiverId: myId },
+            ],
+        };
+
+        const filter = beforeRaw
+            ? mongoose.Types.ObjectId.isValid(String(beforeRaw))
+                ? { $and: [conversation, { _id: { $lt: new mongoose.Types.ObjectId(String(beforeRaw)) } }] }
+                : null
+            : conversation;
+
+        if (filter === null) {
+            return res.status(400).json({ success: false, message: "Invalid cursor (before)." });
+        }
+
+        const take = limit + 1;
+        const batch = await Message.find(filter)
+            .sort({ _id: -1 })
+            .limit(take)
+            .lean();
+
+        const hasMore = batch.length > limit;
+        const page = hasMore ? batch.slice(0, limit) : batch;
+        page.reverse();
+
+        const myIdStr = myId.toString();
+        const sidStr = sid.toString();
+        const toMark = page
+            .filter((m) => String(m.senderId) === sidStr && String(m.receiverId) === myIdStr && !m.seen)
+            .map((m) => m._id);
+
+        if (toMark.length > 0) {
+            await Message.updateMany({ _id: { $in: toMark } }, { $set: { seen: true } });
+            for (const m of page) {
+                if (toMark.some((id) => id.toString() === m._id.toString())) m.seen = true;
+            }
+        }
+
+        // Attach active-session info if one exists between these two users
+        const activeEntry = await findActiveEntry(myId, sid);
+        let remainingSeconds  = null;
+        let currentQueueEntryId = null;
+        let bookingId         = null;
+
+        if (activeEntry) {
+            const key   = activeEntry._id.toString();
+            currentQueueEntryId = key;
+            const booking = await Booking.findOne({ queueEntryId: activeEntry._id, status: "active" });
+            bookingId = booking?._id?.toString() ?? null;
+            remainingSeconds = booking ? remainingSecondsFromBooking(booking) : null;
+        }
+
+        res.json({
+            success: true,
+            messages: page,
+            hasMore,
+            nextCursor: hasMore && page[0]?._id ? String(page[0]._id) : null,
+            remainingSeconds,
+            currentQueueEntryId,
+            bookingId,
         });
-
-        res.json({ success: true, messages, sessionStartTime: session?.startTime })
-
-
     } catch (error) {
         console.error("[getMessages] myId=%s selectedUserId=%s | %s", req.user?._id, req.params?.id, error.message, { stack: error.stack });
         res.status(500).json({ success: false, message: "Failed to load messages. Please try again later." });
     }
-}
+};
 
-// api to mark message as seen using message id
-export const markMessageAsSeen = async (req, res)=>{
+
+// ─── PUT /api/messages/mark/:id ───────────────────────────────────────────────
+export const markMessageAsSeen = async (req, res) => {
     try {
         const { id } = req.params;
         const message = await Message.findById(id);
+
         if (!message) {
-            return res.status(404).json({success: false, message: "Message not found"});
+            return res.status(404).json({ success: false, message: "Message not found" });
         }
         if (message.receiverId.toString() !== req.user._id.toString()) {
-            return res.status(403).json({success: false, message: "Not authorized"});
+            return res.status(403).json({ success: false, message: "Not authorized" });
         }
-        await Message.findByIdAndUpdate(id, {seen: true});
-        res.json({success: true})
+
+        await Message.findByIdAndUpdate(id, { seen: true });
+        res.json({ success: true });
     } catch (error) {
         console.error("[markMessageAsSeen] messageId=%s userId=%s | %s", req.params?.id, req.user?._id, error.message, { stack: error.stack });
         res.status(500).json({ success: false, message: "Failed to update message status. Please try again later." });
     }
-}
+};
 
-// Send message to selected user
-export const sendMessage = async (req, res) =>{
+
+// ─── POST /api/messages/send/:id ─────────────────────────────────────────────
+export const sendMessage = async (req, res) => {
     try {
-        const {text, image} = req.body;
+        const { text, image } = req.body; // `image` = Cloudinary HTTPS URL from client-side upload
         const receiverId = req.params.id;
-        const senderId = req.user._id;
+        const senderId   = req.user._id;
         const senderName = req.user.fullName;
-        const senderRole = req.user.role;
 
-        // Fetch receiver details to confirm their role
-        const receiver = await User.findById(receiverId);
-        if (!receiver) {
-            return res.status(404).json({ success: false, message: "Receiver not found" });
+        if (!text && !image) {
+            return res.status(400).json({ success: false, message: "Message must contain text or an image." });
         }
 
-        // Determine astrologer and client IDs
-        const astrologerId = senderRole === "astrologer" ? senderId : receiverId;
-        const clientId = senderRole === "client" ? senderId : receiverId;
+        // Validate receiver exists
+        const receiver = await User.findById(receiverId);
+        if (!receiver) {
+            return res.status(404).json({ success: false, message: "Receiver not found." });
+        }
 
-        // Check for an existing session
-        let session = await Session.findOne({ astrologerId, clientId });
-        let isNewSession = false;
+        // ── Session guard: require an active booking between these two users ──
+        const activeEntry = await findActiveEntry(senderId, new mongoose.Types.ObjectId(receiverId));
 
-        // Logic check: Chat initiation and expiry
-        if (!session) {
-            // Only an astrologer can start the chat
-            if (senderRole === "astrologer") {
-                session = await Session.create({
-                    astrologerId,
-                    clientId,
-                    startTime: new Date()
-                });
-                isNewSession = true;
-            } else {
-                return res.status(403).json({ success: false, message: "Chat must be initiated by the astrologer." });
-            }
-        } else {
-            // If session exists, check if it's expired (3 minutes = 180,000ms)
-            const currentTime = new Date();
-            const elapsedTime = currentTime - session.startTime;
-            if (elapsedTime > 3 * 60 * 1000) {
-                return res.status(403).json({ success: false, message: "Chat session has expired. Both users are now blocked from messaging." });
-            }
+        if (!activeEntry) {
+            return res.status(403).json({
+                success: false,
+                message: "No active session. You can only message during an active booking.",
+            });
+        }
+
+        const queueEntryId = activeEntry._id.toString();
+
+        const booking = await Booking.findOne({ queueEntryId: activeEntry._id, status: "active" });
+        const remainingSeconds = booking ? remainingSecondsFromBooking(booking) : 0;
+
+        // Booking is authoritative — if expired, session is over
+        if (!booking || remainingSeconds <= 0) {
+            return res.status(403).json({
+                success: false,
+                message: "Session has expired.",
+            });
         }
 
         let imageUrl;
-        if(image){
-            const uploadResponse = await cloudinary.uploader.upload(image)
-            imageUrl = uploadResponse.secure_url;
+        if (image) {
+            if (!isHttpsCloudinaryImageUrl(image)) {
+                return res.status(400).json({
+                    success: false,
+                    message: "Images must be uploaded to Cloudinary before sending.",
+                });
+            }
+            imageUrl = image;
         }
+
         const newMessage = await Message.create({
             senderId,
             receiverId,
             text,
-            image: imageUrl
-        })
+            image: imageUrl,
+        });
 
-        // If this is a brand new session, notify the client immediately so their
-        // timer starts and chat unlocks — no refresh required.
-        if (isNewSession) {
-            const clientSocketId = userSocketMap[clientId.toString()];
-            if (clientSocketId) {
-                io.to(clientSocketId).emit("sessionStarted", {
-                    startTime: session.startTime,
-                    astrologerId: astrologerId.toString(),
-                    clientId: clientId.toString(),
-                });
-            }
+        const payload = {
+            ...newMessage.toObject(),
+            _id: String(newMessage._id),
+            senderId: String(newMessage.senderId),
+            receiverId: String(newMessage.receiverId),
+            senderName,
+        };
+
+        // Push to all receiver sessions via their personal room (existing behavior)
+        io.to(`user:${receiverId.toString()}`).emit("newMessage", payload);
+
+        // Also emit to the active booking room (new real-time contract)
+        if (booking?._id) {
+            io.to(`session:${booking._id.toString()}`).emit("receive_message", payload);
         }
 
-        // Emit the new message to the receiver's socket
-        const receiverSocketId = userSocketMap[receiverId.toString()];
-        if (receiverSocketId){
-            io.to(receiverSocketId).emit("newMessage", {
-                ...newMessage.toObject(),
-                senderName
-            })
-        }
-
-        res.json({success: true, newMessage, sessionStartTime: session.startTime});
-
+        res.json({ success: true, newMessage });
     } catch (error) {
         console.error("[sendMessage] senderId=%s receiverId=%s | %s", req.user?._id, req.params?.id, error.message, { stack: error.stack });
         res.status(500).json({ success: false, message: "Failed to send message. Please try again later." });
     }
-}
+};

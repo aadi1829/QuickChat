@@ -2,6 +2,7 @@ import express from "express";
 import { body } from "express-validator";
 import {
     checkAuth,
+    listAstrologers,
     login,
     logout,
     refreshAccessToken,
@@ -9,44 +10,31 @@ import {
     updateProfile,
 } from "../controllers/userController.js";
 import { protectRoute } from "../middleware/auth.js";
-import rateLimit from "express-rate-limit";
+import { authLimiter } from "../middleware/rateLimit.js";
+import { issueCsrfToken, requireCsrf } from "../middleware/csrf.js";
 
 const userRouter = express.Router();
 
-// Strict rate limiter for auth endpoints — max 10 requests per 15 minutes per IP
-// Disabled in test environment so tests don't trigger 429s
-const authLimiter = process.env.NODE_ENV === "test"
-    ? (req, res, next) => next()
-    : rateLimit({
-        windowMs: 15 * 60 * 1000,
-        max: 10,
-        standardHeaders: true,
-        legacyHeaders: false,
-        message: { success: false, message: "Too many requests. Please try again later." },
-    });
+userRouter.post("/signup", authLimiter, [
+    body("fullName").trim().escape().notEmpty().withMessage("Full name is required"),
+    body("email").trim().isEmail().withMessage("Valid email is required"),
+    body("password").isLength({ min: 6 }).withMessage("Password must be at least 6 characters"),
+    body("bio").optional({ nullable: true }).trim().escape(),
+    body("role").isIn(["astrologer", "client"]).withMessage("Role must be astrologer or client"),
+], signup);
 
-// Input validation rules
-const signupValidation = [
-    body("fullName").trim().notEmpty().withMessage("Full name is required").isLength({ max: 100 }),
-    body("email").trim().isEmail().withMessage("Valid email is required").normalizeEmail(),
-    body("password")
-        .isLength({ min: 8 }).withMessage("Password must be at least 8 characters")
-        .matches(/[A-Z]/).withMessage("Password must contain at least one uppercase letter")
-        .matches(/[0-9]/).withMessage("Password must contain at least one number"),
-    body("bio").trim().notEmpty().withMessage("Bio is required").isLength({ max: 300 }),
-    body("role").isIn(["astrologer", "client"]).withMessage("Role must be 'astrologer' or 'client'"),
-];
-
-const loginValidation = [
-    body("email").trim().isEmail().withMessage("Valid email is required").normalizeEmail(),
+userRouter.post("/login", authLimiter, [
+    body("email").trim().isEmail().withMessage("Valid email is required"),
     body("password").notEmpty().withMessage("Password is required"),
-];
-
-userRouter.post("/signup", authLimiter, signupValidation, signup);
-userRouter.post("/login", authLimiter, loginValidation, login);
-userRouter.post("/logout", protectRoute, logout);
-userRouter.post("/refresh", refreshAccessToken);
-userRouter.put("/update-profile", protectRoute, updateProfile);
+], login);
+userRouter.post("/logout", protectRoute, requireCsrf, logout);
+userRouter.post("/refresh", authLimiter, refreshAccessToken);
+userRouter.put("/update-profile", protectRoute, requireCsrf, [
+    body("fullName").optional({ nullable: true }).trim().escape(),
+    body("bio").optional({ nullable: true }).trim().escape(),
+], updateProfile);
 userRouter.get("/check", protectRoute, checkAuth);
+userRouter.get("/astrologers", protectRoute, listAstrologers);
+userRouter.get("/csrf", issueCsrfToken);
 
 export default userRouter;
